@@ -19,6 +19,10 @@ import { keyVault } from "../../lib/keyVault";
 import { createSignature } from "../../controllers/authz";
 import { useTransaction } from "../../contexts/TransactionContext";
 import * as styles from "../../styles";
+import { PayGlideClient, CheckoutSession } from "@payglide/sdk-js";
+import PayGlide from "../../components/PayGlide";
+
+const PUBLISHABLE_PAYGLIDE_API_KEY = "";
 
 export default function Authz({ fclTabId }) {
   const [signable, setSignable] = useState(null);
@@ -26,21 +30,39 @@ export default function Authz({ fclTabId }) {
   const [transactionCode, setTransactionCode] = useState(``);
   const [showTransactionCode, setShowTransactionCode] = useState(false);
   const [description, setDescription] = useState(
-    "This transaction has not been audited."
+    "Checking transaction code ..."
   );
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [txView, setTxView] = useState("detail");
   const [host, setHost] = useState("");
 
+  const [checkout, setCheckout] = useState(null)
+
   const { initTransactionState, setTxId, setTransactionStatus } =
     useTransaction();
   const toast = useToast();
 
-  function fclCallback(data) {
+  async function fclCallback(data) {
     if (typeof data != "object") return;
     if (data.type !== "FCL:VIEW:READY:RESPONSE") return;
     const signable = data.body;
+    if(!checkout || !checkout.sessionId) {
+      try {
+        const initialCheckout = await new PayGlideClient({
+          apiKey: PUBLISHABLE_PAYGLIDE_API_KEY,
+        }).initCheckout({
+          address: signable.voucher.payer,
+          code: signable.voucher.cadence,
+          arguments: signable.voucher.arguments,
+        })
+        const price = initialCheckout.products.map(p => `${p.pricing.amount} ${p.pricing.currency}`).join(",")
+        setDescription(`The transaction will cost: ${price}`);
+        setCheckout(initialCheckout);
+      } catch (e) {
+        setDescription("This transaction has not been audited.");
+      }
+    }
     const { hostname } = data.config.client;
     hostname && setHost(hostname);
     if (signable.voucher.cadence) {
@@ -104,6 +126,16 @@ export default function Authz({ fclTabId }) {
       ),
     });
     setTxView("sending");
+  }
+
+  async function payByCard() {
+    setTxView("payingByCard");
+    if (checkout && signable) {
+      const finalSession = await checkout.onTransactionComplete();
+      if ( finalSession.status === CheckoutSession.status.TOKEN_TRANSFER_COMPLETED ) {
+        sendAuthzToFCL();
+      }
+    }
   }
 
   function sendCancelToFCL() {
@@ -231,8 +263,30 @@ export default function Authz({ fclTabId }) {
                       </VStack>
                     </Box>
                     <Spacer />
+                    <Flex direction="col" align="center" justify="center">
+                      {!!checkout ? 
+                      <div>
+                        You can pay for this NFT directly with your credit card.
+                      </div>
+                      : null} 
+                    </Flex>
                     <Flex direction="row" align="center" justify="center">
                       <div>
+                        {!!checkout ? 
+                        <Button
+                          onClick={payByCard}
+                          textAlign="center"
+                          mt="4"
+                          bg={styles.secondaryColor}
+                          color={styles.whiteColor}
+                          mx="auto"
+                          mr="16px"
+                          maxW="150px"
+                          isLoading={loading}
+                        > 
+                          Pay by Card
+                        </Button>
+                        :
                         <Button
                           onClick={sendCancelToFCL}
                           textAlign="center"
@@ -244,6 +298,7 @@ export default function Authz({ fclTabId }) {
                         >
                           Cancel
                         </Button>
+                        }
                         <Button
                           onClick={sendAuthzToFCL}
                           textAlign="center"
@@ -254,7 +309,7 @@ export default function Authz({ fclTabId }) {
                           maxW="150px"
                           isLoading={loading}
                         >
-                          Confirm
+                          {!!checkout ? "Pay by Crypto" : "Confirm"}
                         </Button>
                       </div>
                     </Flex>
@@ -270,6 +325,18 @@ export default function Authz({ fclTabId }) {
                     justify="center"
                   >
                     <Transaction />
+                  </Flex>
+                );
+              case "payingByCard":
+                return (
+                  <Flex
+                    direction="col"
+                    w="100%"
+                    h="100%"
+                    align="center"
+                    justify="center"
+                  >
+                    <PayGlide payGlideUrl={checkout.getCheckoutPage("fxw")}/>
                   </Flex>
                 );
               default:
